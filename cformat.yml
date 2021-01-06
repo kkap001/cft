@@ -1,0 +1,425 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: ""
+Parameters:
+  codecommitBranch:
+    Type: String
+    Description: Git branch.
+    Default: master  
+  codepipelinename:
+    Type: String
+    Description: pipelinename  
+    Default: codetestpipeline
+  invalidationdistribution:
+    Type: String
+    Description: distriution id
+    Default: ECJ14GYA8GB67
+  Invalidationrequestpath:
+    Type: String
+    Description: path
+    Default: "/dist"
+  lambdafunctionname:
+    Type: String
+    Description: path
+    Default: invalidationlambda
+  unzipfunctionname:
+    Type: String
+    Description: path
+    Default: unzipcode
+    
+Resources:
+  cfcodebuildrole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - codebuild.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: codebuild-policy
+        PolicyDocument:
+          Statement:
+          - Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: "*"
+            Effect: Allow
+          - Action:
+            - s3:GetObject
+            - s3:GetObjectVersion
+            - s3:GetBucketVersioning
+            - s3:GetBucketAcl
+            - s3:GetBucketLocation
+            Resource: "*"
+            Effect: Allow
+          - Action:
+            - codecommit:GitPull
+            Resource: "*"
+            Effect: Allow
+          - Action:
+            - s3:PutObject
+            - s3:GetBucketLocation
+            - s3:GetBucketAcl
+            Resource: "*"
+            Effect: Allow
+          - Action:
+            - codebuild:CreateProject
+            - codebuild:StartBuild
+            - codebuild:StopBuild
+            - codebuild:BatchDeleteBuilds
+            - codebuild:BatchGetBuilds
+            - codebuild:CreateReport
+            - codebuild:UpdateReport
+            - codebuild:CreateReportGroup
+            - codebuild:BatchPutTestCases
+            - codebuild:BatchPutCodeCoverages
+            Resource: "*"
+            Effect: Allow    
+  CodePipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - codepipeline.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: nodebuild-policy
+        PolicyDocument:
+          Statement:
+          - Action:
+            - codecommit:GetBranch
+            - codecommit:GetCommit
+            - codecommit:UploadArchive
+            - codecommit:GetUploadArchiveStatus
+            - codecommit:CancelUploadArchive
+            Resource: "*"
+            Effect: Allow
+          - Action:
+            - lambda:*
+            Resource: "*"
+            Effect: Allow
+          - Action:
+            - s3:GetObject
+            - s3:GetObjectVersion
+            - s3:GetBucketVersioning
+            - s3:GetBucketAcl
+            - s3:GetBucketLocation
+            Resource: "*"
+            Effect: Allow
+          - Action:
+            - s3:PutObject
+            Resource:
+            - arn:aws:s3:::codepipeline*
+            Effect: Allow
+          - Action:
+            - s3:*
+            - iam:PassRole
+            Resource: "*"
+            Effect: Allow
+          - Action:
+            - codebuild:CreateProject
+            - codebuild:StartBuild
+            - codebuild:StopBuild
+            - codebuild:BatchDeleteBuilds
+            - codebuild:BatchGetBuilds
+            - iam:PassRole
+            Resource: "*"
+            Effect: Allow       
+
+  PipelineArtifactsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: tangclnumerbucket
+      VersioningConfiguration:
+        Status: Enabled
+
+
+  CodePipelinePipeline:  
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: node_pipeline
+      ArtifactStore:
+        Type: S3
+        Location: !Ref PipelineArtifactsBucket
+     
+      RoleArn: !GetAtt CodePipelineRole.Arn
+      Stages: 
+        - Name: Source
+          Actions: 
+          - Name: Source
+            InputArtifacts: []
+            ActionTypeId: 
+                Category: "Source"
+                Owner: "AWS"
+                Provider: "CodeCommit"
+                Version: "1"
+            Configuration: 
+                BranchName: !Ref codecommitBranch
+                PollForSourceChanges: "false"
+                RepositoryName: "angularcase"
+            OutputArtifacts: 
+              - Name: SourceCode
+            Region: !Ref AWS::Region
+            Namespace: "SourceVariables"
+            RunOrder: 1
+          Name: "Source"
+        - Name: Build
+          Actions: 
+          - Name: "BuildAction"
+            ActionTypeId: 
+                Category: "Build"
+                Owner: "AWS"
+                Provider: "CodeBuild"
+                Version: "1"
+            InputArtifacts:
+                - Name: SourceCode
+            OutputArtifacts:
+                - Name: BuildArtifacts
+            Configuration: 
+                ProjectName: !Ref CodeBuildProject  
+            Region: !Ref AWS::Region
+            Namespace: "BuildVariables"
+            RunOrder: 2
+          Name: "Build" 
+
+        - Name: lambda_stage
+          Actions: 
+          - Name: "unzip_lambda"
+            ActionTypeId: 
+                Category: "Invoke"
+                Owner: "AWS"
+                Provider: "Lambda"
+                Version: "1"
+            Configuration: 
+                FunctionName: !Ref unzipfunctionname
+            RunOrder: 3
+          - Name: "Lambdatrigger"
+            ActionTypeId: 
+                Category: "Invoke"
+                Owner: "AWS"
+                Provider: "Lambda"
+                Version: "1"
+            Configuration: 
+                FunctionName: !Ref lambdafunctionname
+            Region: !Ref AWS::Region
+            RunOrder: 4
+  CodeBuildProject:
+        Type: "AWS::CodeBuild::Project"
+        Properties:
+            Name: "test-project"
+            Description: "test_codebuild_project"
+            Source: 
+                BuildSpec: ""
+                GitCloneDepth: 1
+                GitSubmodulesConfig: 
+                    FetchSubmodules: true
+                InsecureSsl: false
+                Location: !Sub "https://git-codecommit.${AWS::Region}.amazonaws.com/v1/repos/angularcase"
+                Type: "CODECOMMIT"
+            Artifacts: 
+                EncryptionDisabled: false
+                Location: "tangclnumerbucket"
+                Name: "code"
+                NamespaceType: "NONE"
+                OverrideArtifactName: True
+                Packaging: "NONE"
+                Path: ""
+                Type: "S3"
+            Cache: 
+                Type: "NO_CACHE"
+            Environment: 
+                ComputeType: "BUILD_GENERAL1_SMALL"
+                EnvironmentVariables: 
+                  - 
+                    Name: "angular"
+                    Type: "PLAINTEXT"
+                    Value: "20"
+                Image: "aws/codebuild/standard:4.0"
+                ImagePullCredentialsType: "CODEBUILD"
+                PrivilegedMode: false
+                Type: "LINUX_CONTAINER"
+            ServiceRole: !GetAtt cfcodebuildrole.Arn
+            TimeoutInMinutes: 5
+            QueuedTimeoutInMinutes: 480
+            EncryptionKey: !Sub "arn:aws:kms:${AWS::Region}:${AWS::AccountId}:alias/aws/s3"
+            BadgeEnabled: false
+            LogsConfig: 
+                CloudWatchLogs: 
+                    Status: "ENABLED"
+                    GroupName: "log-group"
+                    StreamName: "log-stream"
+                S3Logs: 
+                    Status: "DISABLED"
+                    EncryptionDisabled: false
+  invalidationrole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/service-role/"
+      Policies:
+      - PolicyName: invalidationlambda-policy
+        PolicyDocument:
+          Statement:
+          - Action: 
+            - cloudfront:CreateInvalidation
+            Resource: "*"
+            Effect: Allow
+          - Action: 
+            - S3:*
+            Resource: "*"
+            Effect: Allow
+          - Action:
+            - codepipeline:PutJobSuccessResult
+            - codepipeline:PutJobFailureResult
+            Resource: "*"
+            Effect: Allow
+          - Action:
+            - cloudwatch:*
+            - logs:*
+            Resource: "*"
+            Effect: Allow
+  InvalidationFunction:
+        Type: "AWS::Lambda::Function"
+        Properties:
+            Description: "functionfortesting"
+            Environment: 
+                Variables: 
+                    path: !Ref Invalidationrequestpath
+                    DistributionId: !Ref invalidationdistribution
+            FunctionName: !Ref lambdafunctionname
+            Handler: "index.lambda_handler"
+            Code:
+              ZipFile: |
+                  from __future__ import print_function
+                  from boto3.session import Session
+                  import time
+                  import urllib
+                  import boto3
+                  import tempfile
+                  import botocore
+                  import traceback
+                  from io import BytesIO
+                  code_pipeline = boto3.client('codepipeline')
+                  def put_job_success(job, message):
+                      print('Putting job success')
+                      print(message)
+                      code_pipeline.put_job_success_result(jobId=job)
+                  def put_job_failure(job, message):
+                      print('Putting job failure')
+                      print(message)
+                      code_pipeline.put_job_failure_result(jobId=job, failureDetails={'message': message, 'type': 'JobFailed'})
+                  path = "/" + "dist"
+                  def lambda_handler(event, context):
+                              # Extract the Job ID
+                      job_id = event['CodePipeline.job']['id']
+                      # Extract the Job Data 
+                      job_data = event['CodePipeline.job']['data']        
+                      client = boto3.client('cloudfront')
+                      invalidation = client.create_invalidation(DistributionId='ECJ14GYA8GB67',
+                          InvalidationBatch={
+                              'Paths': {
+                                  'Quantity': 1,
+                                  'Items': [path]
+                          },
+                          'CallerReference': str(time.time())
+                      })
+                      if (invalidation != 0 ):
+                          print("\n")
+                          put_job_success(job_id, 'Job succesful, minimal or no risk detected.')
+                      else:
+                          print("\n")
+                          put_job_failure(job_id, 'Function exception: Found Security group SSH violation and deleted the stack. Check the logs ')
+            MemorySize: 128
+            Role: !GetAtt invalidationrole.Arn
+            Runtime: "python3.7"
+            Timeout: 10
+            TracingConfig: 
+                Mode: "PassThrough"    
+  unzips3Function:
+        Type: "AWS::Lambda::Function"
+        Properties:
+            Description: "unzipcode"
+            Environment: 
+                Variables: 
+                    path: !Ref Invalidationrequestpath
+                    DistributionId: !Ref invalidationdistribution
+            FunctionName: !Ref unzipfunctionname
+            Handler: "index.lambda_handler"
+            Code:
+              ZipFile: |
+                  from __future__ import print_function
+                  from boto3.session import Session
+                  import json
+                  import urllib
+                  import boto3
+                  import zipfile
+                  import tempfile
+                  import botocore
+                  import traceback
+                  from io import BytesIO
+                  code_pipeline = boto3.client('codepipeline')
+                  def put_job_success(job, message):
+                      print('Putting job success')
+                      print(message)
+                      code_pipeline.put_job_success_result(jobId=job)
+                  def put_job_failure(job, message):
+                      print('Putting job failure')
+                      print(message)
+                      code_pipeline.put_job_failure_result(jobId=job, failureDetails={'message': message, 'type': 'JobFailed'})
+                  def lambda_handler(event, context):
+                          # Extract the Job ID
+                      job_id = event['CodePipeline.job']['id']
+                      # Extract the Job Data 
+                      job_data = event['CodePipeline.job']['data']
+                      bucket = 'tangclnumerbucket'
+                      s3 = boto3.client('s3', use_ssl=False)
+                      Key_unzip = '*'
+                      prefix      = "node_pipeline/BuildArtif/"
+                      zipped_keys =  s3.list_objects_v2(Bucket=bucket, Prefix=prefix, Delimiter = "/")
+                      file_list = []
+                      for key in zipped_keys['Contents']:
+                          file_list.append(key['Key'])
+                      #This will give you list of files in the folder you mentioned as prefix
+                      s3_resource = boto3.resource('s3')
+                      #Now create zip object one by one, this below is for 1st file in file_list
+                      zip_obj = s3_resource.Object(bucket_name=bucket, key=file_list[0])
+                      print (zip_obj)
+                      buffer = BytesIO(zip_obj.get()["Body"].read())
+                      z = zipfile.ZipFile(buffer)
+                      for filename in z.namelist():
+                          file_info = z.getinfo(filename)
+                          s3_resource.meta.client.upload_fileobj(
+                              z.open(filename),
+                              Bucket=bucket,
+                              Key='code/' + f'{filename}')
+                      if (file_info != 0 ):
+                          print("\n")
+                          put_job_success(job_id, 'Job succesful, minimal or no risk detected.')
+                      else:
+                          print("\n")
+                          put_job_failure(job_id, 'Function exception: Found Security group SSH violation and deleted the stack. Check the logs ')
+                      
+            MemorySize: 128
+            Role: !GetAtt invalidationrole.Arn
+            Runtime: "python3.7"
+            Timeout: 10
+            TracingConfig: 
+                Mode: "PassThrough"    
+ 
